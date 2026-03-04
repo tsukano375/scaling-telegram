@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>言語化トレーニング</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .fade-in { animation: fadeIn .4s ease; }
+  @keyframes fadeIn { from { opacity:0; transform:translateY(12px); } to { opacity:1; transform:none; } }
+  .spin { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  textarea:focus { outline: none; box-shadow: 0 0 0 3px rgba(99,102,241,.3); }
+  .score-ring circle { transition: stroke-dashoffset .8s ease; }
+</style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+
+<div id="app" class="max-w-lg mx-auto min-h-screen bg-white shadow-sm pb-20"></div>
+
+<!-- Bottom Navigation -->
+<nav class="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-100 z-50">
+  <div class="max-w-lg mx-auto flex">
+    <button onclick="showPage('home')" id="nav-home" class="flex-1 flex flex-col items-center py-3 gap-0.5 transition-colors text-indigo-600">
+      <span class="text-xl leading-none">⊙</span>
+      <span class="text-xs font-medium">ホーム</span>
+    </button>
+    <button onclick="showPage('practice')" id="nav-practice" class="flex-1 flex flex-col items-center py-3 gap-0.5 transition-colors text-gray-400 hover:text-gray-600">
+      <span class="text-xl leading-none">✎</span>
+      <span class="text-xs font-medium">練習</span>
+    </button>
+    <button onclick="showPage('history')" id="nav-history" class="flex-1 flex flex-col items-center py-3 gap-0.5 transition-colors text-gray-400 hover:text-gray-600">
+      <span class="text-xl leading-none">◷</span>
+      <span class="text-xs font-medium">履歴</span>
+    </button>
+  </div>
+</nav>
+
+<script>
+// ── Mock Data ────────────────────────────────────────────
+const TODAY = new Date().toLocaleDateString("ja-JP", { month:"long", day:"numeric", weekday:"long" });
+const THEME = "喜びを言葉に";
+const THEME_DESC = "今日のテーマは「喜び」。小さな喜びも大きな喜びも、できるだけ具体的な言葉で表現してみましょう。";
+
+const EXERCISES = [
+  { id:"e1", category:"emotion", difficulty:"beginner", title:"今日感じた小さな喜び", prompt:"今日、ほんの少しでも「よかった」「うれしい」と感じた瞬間はありましたか？その気持ちを、できるだけ具体的に言葉にしてみてください。", hint:"五感（見た・聞いた・感じた）を使うと書きやすいです。", timeLimit:180 },
+  { id:"e2", category:"abstract", difficulty:"intermediate", title:"「喜び」とはなにか", prompt:"「喜び」という感情を、まだ「喜び」という言葉を知らない人に説明するとしたら、どう表現しますか？", hint:"比喩や具体的なエピソードを活用してみましょう。", timeLimit:120 },
+  { id:"e3", category:"scene", difficulty:"beginner", title:"誰かが笑顔になった場面", prompt:"最近、誰かが笑顔になっている場面を目にしましたか？その場面をできるだけ鮮明に描写してください。", hint:"場所・人物・表情・音など周囲の状況も書いてみると◎", timeLimit:180 },
+  { id:"e4", category:"opinion", difficulty:"advanced", title:"喜びは追いかけるべきか", prompt:"「人は喜びを積極的に追い求めるべきだ」という意見について、あなたはどう考えますか？理由も含めて述べてください。", hint:"賛成・反対どちらの立場でも構いません。", timeLimit:90 },
+  { id:"e5", category:"introspection", difficulty:"intermediate", title:"自分が喜ぶ条件", prompt:"あなたが心から喜びを感じるのはどんなときですか？パターンや共通点を探りながら言語化してください。", hint:"複数の具体例から共通点を抽出してみましょう。", timeLimit:120 },
+];
+
+const CAT_LABELS = { emotion:"感情", abstract:"抽象概念", scene:"場面・状況", opinion:"意見・考え", introspection:"自己内省" };
+const CAT_COLORS = {
+  emotion:"bg-rose-100 text-rose-700 border-rose-200",
+  abstract:"bg-violet-100 text-violet-700 border-violet-200",
+  scene:"bg-amber-100 text-amber-700 border-amber-200",
+  opinion:"bg-sky-100 text-sky-700 border-sky-200",
+  introspection:"bg-emerald-100 text-emerald-700 border-emerald-200",
+};
+const DIFF_LABELS = { beginner:"初級", intermediate:"中級", advanced:"上級" };
+const DIFF_COLORS = { beginner:"text-green-600", intermediate:"text-orange-500", advanced:"text-red-600" };
+
+// ── State ────────────────────────────────────────────────
+let state = {
+  page: "home",
+  phase: "select",        // select | ready | writing | submitting | feedback
+  selectedEx: null,
+  userText: "",
+  elapsed: 0,
+  timerInterval: null,
+  feedback: null,
+  sessions: JSON.parse(localStorage.getItem("kotoba_sessions")||"[]"),
+  progress: JSON.parse(localStorage.getItem("kotoba_progress")||"null") || {
+    totalSessions:0, currentStreak:0, longestStreak:0, lastSessionDate:null,
+    categoryScores:{emotion:[],abstract:[],scene:[],opinion:[],introspection:[]},
+    weeklyScores:[]
+  }
+};
+
+// ── Helpers ──────────────────────────────────────────────
+function saveSession(record) {
+  state.sessions.unshift(record);
+  if (state.sessions.length > 200) state.sessions = state.sessions.slice(0,200);
+  localStorage.setItem("kotoba_sessions", JSON.stringify(state.sessions));
+
+  const p = state.progress;
+  const today = new Date().toISOString().split("T")[0];
+  p.totalSessions++;
+  if (!p.lastSessionDate) { p.currentStreak=1; }
+  else {
+    const diff = Math.floor((new Date(today)-new Date(p.lastSessionDate))/(86400000));
+    if (diff===0) {} else if (diff===1) { p.currentStreak++; } else { p.currentStreak=1; }
+  }
+  p.longestStreak = Math.max(p.longestStreak, p.currentStreak);
+  p.lastSessionDate = today;
+  p.categoryScores[record.exercise.category].push(record.feedback.score);
+  if (p.categoryScores[record.exercise.category].length>20)
+    p.categoryScores[record.exercise.category] = p.categoryScores[record.exercise.category].slice(-20);
+  const existing = p.weeklyScores.find(w=>w.date===today);
+  if (existing) existing.score = Math.round((existing.score+record.feedback.score)/2);
+  else { p.weeklyScores.push({date:today,score:record.feedback.score}); p.weeklyScores=p.weeklyScores.slice(-7); }
+  localStorage.setItem("kotoba_progress", JSON.stringify(p));
+}
+
+function catBadge(cat) {
+  return `<span class="text-xs font-semibold px-2 py-0.5 rounded-full border ${CAT_COLORS[cat]}">${CAT_LABELS[cat]}</span>`;
+}
+function diffBadge(d) {
+  return `<span class="text-xs font-semibold ${DIFF_COLORS[d]}">${DIFF_LABELS[d]}</span>`;
+}
+function fmtMM(secs) {
+  const m=String(Math.floor(secs/60)).padStart(2,"0"), s=String(secs%60).padStart(2,"0");
+  return `${m}:${s}`;
+}
+function avgScore(cat) {
+  const arr = state.progress.categoryScores[cat];
+  if(!arr||!arr.length) return 0;
+  return Math.round(arr.reduce((a,b)=>a+b,0)/arr.length);
+}
+function scoreColor(s) {
+  return s>=80?"text-emerald-600":s>=60?"text-indigo-600":s>=40?"text-amber-600":"text-red-500";
+}
+function barColor(s) {
+  return s>=80?"bg-emerald-400":s>=60?"bg-indigo-400":s>=40?"bg-amber-400":"bg-red-400";
+}
+
+// ── Mock Feedback Generator ──────────────────────────────
+function mockFeedback(text, ex) {
+  const len = text.trim().length;
+  if (len < 5) return {
+    score:0, clarity:0, expressiveness:0, structure:0,
+    summary:"もう少し詳しく書いてみましょう。",
+    strengths:[], improvements:["もっと具体的に書いてみてください"],
+    rewriteSuggestion:null
+  };
+  const base = Math.min(50 + Math.floor(len/3), 85) + Math.floor(Math.random()*15);
+  const score = Math.min(base, 100);
+  return {
+    score,
+    clarity: Math.min(score + Math.floor(Math.random()*10-5), 100),
+    expressiveness: Math.min(score - 5 + Math.floor(Math.random()*15), 100),
+    structure: Math.min(score - 10 + Math.floor(Math.random()*20), 100),
+    summary: score>=75
+      ? "思いがしっかりと言葉に表れています。具体性と表現の豊かさが良い形で出ています。"
+      : "基本的な内容は伝わっていますが、さらに具体的なエピソードを加えるとより深みが増します。",
+    strengths: score>=75
+      ? ["感情の核心を捉えた表現ができています","読み手に伝わる言葉を選んでいます"]
+      : ["自分の考えを言葉にしようとする姿勢がよく見えます"],
+    improvements: score>=75
+      ? ["より多様な語彙を活用するとさらに良くなります"]
+      : ["具体的な場面や感覚を加えましょう","「なぜそう感じたか」の背景も書くと深みが増します"],
+    rewriteSuggestion: score<80
+      ? "例：「〜のとき、胸の中でじんわりと温かいものが広がる感じがして、思わず口角が上がった。それは小さいけれど確かな喜びだった。」"
+      : null
+  };
+}
+
+// ── Page: Home ───────────────────────────────────────────
+function renderHome() {
+  const p = state.progress;
+  const todayStr = new Date().toISOString().split("T")[0];
+  const todayCount = state.sessions.filter(s=>s.completedAt.startsWith(todayStr)).length;
+  const cats = ["emotion","abstract","scene","opinion","introspection"];
+
+  const weekDays = Array.from({length:7},(_,i)=>{
+    const d=new Date(); d.setDate(d.getDate()-(6-i));
+    return d.toISOString().split("T")[0];
+  });
+  const chartBars = weekDays.map(day=>{
+    const entry = p.weeklyScores.find(w=>w.date===day);
+    const score = entry?.score??0;
+    const h = score>0?Math.max((score/100)*72,6):4;
+    const isToday = day===todayStr;
+    const dayLabel = new Date(day+"T12:00:00").toLocaleDateString("ja-JP",{weekday:"narrow"});
+    return `<div class="flex-1 flex flex-col items-center gap-1">
+      <div class="w-full rounded-t-sm ${score>0?(isToday?"bg-indigo-500":"bg-indigo-300"):"bg-gray-200"}" style="height:${h}px"></div>
+      <span class="text-[10px] text-gray-400">${dayLabel}</span>
+    </div>`;
+  }).join("");
+
+  const catBars = cats.map(cat=>{
+    const avg=avgScore(cat);
+    return `<div class="flex items-center gap-3">
+      <span class="text-sm text-gray-600 w-24 shrink-0">${CAT_LABELS[cat]}</span>
+      <div class="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
+        <div class="h-full bg-indigo-400 rounded-full" style="width:${avg}%"></div>
+      </div>
+      <span class="text-xs text-gray-500 w-6 text-right">${avg>0?avg:"-"}</span>
+    </div>`;
+  }).join("");
+
+  return `<div class="flex flex-col fade-in">
+    <div class="px-6 pt-12 pb-6 bg-gradient-to-b from-indigo-50 to-white">
+      <p class="text-sm text-indigo-400 font-medium">${TODAY}</p>
+      <h1 class="text-3xl font-black text-gray-900 mt-1">言語化<br>トレーニング</h1>
+      <p class="text-sm text-gray-500 mt-2">思考を言葉にする力を、毎日少しずつ。</p>
+    </div>
+    <div class="px-6 flex flex-col gap-6">
+      <div class="bg-indigo-600 rounded-3xl p-6 text-white">
+        <p class="text-sm opacity-75">今日の練習</p>
+        <p class="text-xl font-bold mt-1">${todayCount>0?`${todayCount}問完了！続けましょう`:"今日の問題に挑戦しよう"}</p>
+        <button onclick="showPage('practice')" class="mt-4 inline-block bg-white text-indigo-600 font-bold text-sm px-5 py-2.5 rounded-xl hover:bg-indigo-50 transition-colors">
+          練習を始める →
+        </button>
+      </div>
+      <div class="grid grid-cols-3 gap-3">
+        ${["連続日数|"+p.currentStreak+"日","総セッション|"+p.totalSessions,"最高連続|"+p.longestStreak+"日"].map(s=>{
+          const [l,v]=s.split("|");
+          return `<div class="flex flex-col items-center bg-gray-50 rounded-2xl p-4 gap-1">
+            <span class="text-3xl font-black text-indigo-600">${v}</span>
+            <span class="text-xs text-gray-500">${l}</span>
+          </div>`;
+        }).join("")}
+      </div>
+      ${p.weeklyScores.length>0?`
+      <div class="bg-gray-50 rounded-2xl p-4">
+        <h2 class="text-sm font-semibold text-gray-500 mb-3">直近7日のスコア</h2>
+        <div class="flex items-end gap-1.5 h-20">${chartBars}</div>
+      </div>`:""}
+      <div class="flex flex-col gap-3">
+        <h2 class="text-sm font-semibold text-gray-500">カテゴリ別平均スコア</h2>
+        ${catBars}
+      </div>
+      ${p.totalSessions===0?`
+      <div class="border border-indigo-100 rounded-2xl p-5 text-sm text-gray-600 leading-relaxed">
+        <p class="font-semibold text-gray-800 mb-2">言語化トレーニングとは</p>
+        <p>感情・抽象概念・場面・意見・内省の5つのカテゴリで、思考を言葉に変える練習をします。問題が毎日更新されるので、続けるほど力がつきます。</p>
+      </div>`:""}
+    </div>
+  </div>`;
+}
+
+// ── Page: Practice ───────────────────────────────────────
+function renderPractice() {
+  const ph = state.phase;
+
+  if (ph==="select") {
+    const cards = EXERCISES.map(ex=>`
+      <button onclick="selectEx('${ex.id}')" class="text-left border border-gray-100 rounded-2xl p-4 hover:border-indigo-300 hover:bg-indigo-50 transition-all w-full flex flex-col gap-2">
+        <div class="flex items-center gap-2">${catBadge(ex.category)} ${diffBadge(ex.difficulty)}</div>
+        <p class="font-semibold text-gray-900 text-sm">${ex.title}</p>
+        <p class="text-xs text-gray-500 leading-relaxed line-clamp-2">${ex.prompt}</p>
+        <p class="text-xs text-gray-400">制限時間: ${Math.floor(ex.timeLimit/60)}分</p>
+      </button>`).join("");
+    return `<div class="flex flex-col fade-in">
+      <div class="px-6 pt-10 pb-4">
+        <h2 class="text-2xl font-black text-gray-900">今日の問題</h2>
+        <div class="mt-2 bg-indigo-50 rounded-2xl px-4 py-3">
+          <p class="text-xs text-indigo-500 font-semibold">本日のテーマ</p>
+          <p class="text-base font-bold text-indigo-800">${THEME}</p>
+          <p class="text-xs text-indigo-600 mt-0.5">${THEME_DESC}</p>
+        </div>
+      </div>
+      <div class="px-6 flex flex-col gap-3 pb-6">${cards}</div>
+    </div>`;
+  }
+
+  const ex = state.selectedEx;
+
+  if (ph==="ready") {
+    return `<div class="flex flex-col items-center px-6 pt-12 gap-6 fade-in">
+      <div class="text-center">
+        ${catBadge(ex.category)}
+        <h2 class="text-2xl font-black text-gray-900 mt-3">${ex.title}</h2>
+      </div>
+      <div class="bg-gray-50 rounded-2xl p-5 w-full">
+        <p class="text-gray-700 leading-relaxed">${ex.prompt}</p>
+        ${ex.hint?`<p class="mt-3 text-xs text-gray-400 border-t pt-2">ヒント: ${ex.hint}</p>`:""}
+      </div>
+      <div class="text-center text-sm text-gray-500">制限時間: <span class="font-semibold text-gray-700">${Math.floor(ex.timeLimit/60)}分</span></div>
+      <button onclick="startWriting()" class="w-full py-4 rounded-2xl bg-indigo-600 text-white font-bold text-lg hover:bg-indigo-700 transition-all">スタート</button>
+      <button onclick="state.phase='select';render()" class="text-sm text-gray-400 hover:text-gray-600">問題を選び直す</button>
+    </div>`;
+  }
+
+  if (ph==="writing"||ph==="submitting") {
+    const remaining = ex.timeLimit - state.elapsed;
+    const pct = (state.elapsed/ex.timeLimit)*100;
+    const urgent = remaining<=30;
+    const mm = String(Math.floor(remaining/60)).padStart(2,"0");
+    const ss = String(remaining%60).padStart(2,"0");
+    return `<div class="flex flex-col px-6 pt-8 gap-4 fade-in">
+      <div class="flex flex-col items-center gap-2">
+        <div class="text-3xl font-mono font-bold tabular-nums ${urgent?"text-red-500":"text-gray-700"}" id="timer-display">${mm}:${ss}</div>
+        <div class="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
+          <div id="timer-bar" class="h-full rounded-full ${urgent?"bg-red-400":"bg-indigo-500"}" style="width:${pct}%"></div>
+        </div>
+      </div>
+      <div class="bg-indigo-50 rounded-2xl p-4">
+        <p class="text-sm text-indigo-800 leading-relaxed font-medium">${ex.prompt}</p>
+      </div>
+      <textarea id="user-text" placeholder="ここに言語化してみましょう…"
+        class="w-full min-h-48 resize-none rounded-2xl border border-gray-200 p-4 text-gray-800 text-base leading-relaxed"
+        oninput="state.userText=this.value;document.getElementById('char-count').textContent=this.value.length+'文字'"
+        ${ph==="submitting"?"disabled":""}>${state.userText}</textarea>
+      <div class="flex items-center justify-between">
+        <span id="char-count" class="text-xs text-gray-400">${state.userText.length}文字</span>
+        <button onclick="submitAnswer()" id="submit-btn"
+          class="px-6 py-3 rounded-xl bg-indigo-600 text-white font-semibold text-sm hover:bg-indigo-700 transition-all flex items-center gap-2 disabled:opacity-40"
+          ${ph==="submitting"||!state.userText.trim()?"disabled":""}>
+          ${ph==="submitting"?`<div class="w-4 h-4 border-2 border-white border-t-transparent rounded-full spin"></div>評価中…`:"提出する"}
+        </button>
+      </div>
+    </div>`;
+  }
+
+  if (ph==="feedback"&&state.feedback) {
+    const fb = state.feedback;
+    const sc = scoreColor(fb.score);
+    const bars = [["明確さ",fb.clarity],["表現力",fb.expressiveness],["構造性",fb.structure]].map(([l,v])=>`
+      <div class="flex items-center gap-3">
+        <span class="text-sm text-gray-600 w-20 shrink-0">${l}</span>
+        <div class="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
+          <div class="h-full rounded-full ${barColor(v)}" style="width:${v}%"></div>
+        </div>
+        <span class="text-sm font-semibold text-gray-700 w-8 text-right">${v}</span>
+      </div>`).join("");
+
+    return `<div class="px-6 pt-8 pb-6 fade-in">
+      <div class="mb-4">
+        <p class="text-xs text-gray-400 font-medium uppercase tracking-wide">フィードバック</p>
+        <h2 class="text-lg font-bold text-gray-900">${ex.title}</h2>
+      </div>
+      <div class="mb-4 bg-gray-50 rounded-2xl p-4">
+        <p class="text-xs text-gray-400 mb-1">あなたの回答</p>
+        <p class="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">${state.userText}</p>
+      </div>
+      <!-- Feedback -->
+      <div class="flex flex-col gap-6">
+        <div class="text-center">
+          <div class="${sc} text-6xl font-black">${fb.score}<span class="text-2xl text-gray-400">/100</span></div>
+          <p class="mt-2 text-gray-600 leading-relaxed">${fb.summary}</p>
+        </div>
+        <div class="bg-gray-50 rounded-2xl p-4 flex flex-col gap-3">
+          <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wide">詳細スコア</h3>
+          ${bars}
+        </div>
+        ${fb.strengths.length?`<div class="flex flex-col gap-2">
+          <h3 class="text-sm font-semibold text-emerald-700">✓ 良かった点</h3>
+          <ul class="flex flex-col gap-1">${fb.strengths.map(s=>`<li class="text-sm text-gray-700 flex items-start gap-2"><span class="text-emerald-500 mt-0.5">•</span>${s}</li>`).join("")}</ul>
+        </div>`:""}
+        ${fb.improvements.length?`<div class="flex flex-col gap-2">
+          <h3 class="text-sm font-semibold text-amber-700">△ 改善のヒント</h3>
+          <ul class="flex flex-col gap-1">${fb.improvements.map(s=>`<li class="text-sm text-gray-700 flex items-start gap-2"><span class="text-amber-500 mt-0.5">•</span>${s}</li>`).join("")}</ul>
+        </div>`:""}
+        ${fb.rewriteSuggestion?`<div class="bg-indigo-50 border border-indigo-100 rounded-2xl p-4">
+          <h3 class="text-sm font-semibold text-indigo-700 mb-2">言語化の例</h3>
+          <p class="text-sm text-indigo-900 leading-relaxed">${fb.rewriteSuggestion}</p>
+        </div>`:""}
+        <button onclick="backToSelect()" class="w-full py-3 rounded-2xl bg-indigo-600 text-white font-semibold text-base hover:bg-indigo-700 transition-all">次の問題へ</button>
+      </div>
+    </div>`;
+  }
+}
+
+// ── Page: History ────────────────────────────────────────
+function renderHistory() {
+  if (!state.sessions.length) {
+    return `<div class="flex flex-col fade-in">
+      <div class="px-6 pt-10 pb-4">
+        <h2 class="text-2xl font-black text-gray-900">練習履歴</h2>
+        <p class="text-sm text-gray-400 mt-1">0回のセッション</p>
+      </div>
+      <div class="flex flex-col items-center justify-center py-24 px-6 text-center">
+        <p class="text-4xl mb-4">✎</p>
+        <p class="text-gray-500 text-sm">まだ練習を完了していません。<br>「練習」タブから始めましょう！</p>
+      </div>
+    </div>`;
+  }
+
+  const grouped = {};
+  state.sessions.forEach(s=>{
+    const d=s.completedAt.split("T")[0];
+    if(!grouped[d]) grouped[d]=[];
+    grouped[d].push(s);
+  });
+  const sortedDates = Object.keys(grouped).sort((a,b)=>b.localeCompare(a));
+
+  const html = sortedDates.map(date=>{
+    const label = new Date(date+"T12:00:00").toLocaleDateString("ja-JP",{year:"numeric",month:"long",day:"numeric",weekday:"short"});
+    const items = grouped[date].map((rec,i)=>{
+      const sc = rec.feedback.score;
+      const col = scoreColor(sc);
+      const rid = `rec-${date}-${i}`;
+      const d = new Date(rec.completedAt);
+      const timeStr = d.toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit"});
+      return `<div class="border border-gray-100 rounded-2xl overflow-hidden">
+        <button onclick="toggleRecord('${rid}')" class="w-full text-left p-4 flex items-start gap-3 hover:bg-gray-50 transition-colors">
+          <div class="flex-1 flex flex-col gap-1">
+            <div class="flex items-center gap-2 flex-wrap">${catBadge(rec.exercise.category)} <span class="text-xs text-gray-400">${DIFF_LABELS[rec.exercise.difficulty]}</span></div>
+            <p class="text-sm font-semibold text-gray-900">${rec.exercise.title}</p>
+            <p class="text-xs text-gray-400">${timeStr} · ${rec.durationSeconds}秒</p>
+          </div>
+          <div class="flex flex-col items-end gap-1">
+            <span class="${col} text-2xl font-black">${sc}</span>
+            <span class="text-xs text-gray-400">/ 100</span>
+          </div>
+        </button>
+        <div id="${rid}" class="hidden border-t border-gray-100 px-4 pb-4 pt-3 flex flex-col gap-3">
+          <div><p class="text-xs text-gray-400 mb-1">問い</p><p class="text-sm text-gray-700">${rec.exercise.prompt}</p></div>
+          <div><p class="text-xs text-gray-400 mb-1">あなたの回答</p>
+            <p class="text-sm text-gray-700 whitespace-pre-wrap bg-gray-50 rounded-xl p-3">${rec.userResponse}</p></div>
+          <div><p class="text-xs text-gray-400 mb-1">フィードバック</p><p class="text-sm text-gray-700">${rec.feedback.summary}</p></div>
+          ${rec.feedback.rewriteSuggestion?`<div class="bg-indigo-50 rounded-xl p-3">
+            <p class="text-xs text-indigo-600 mb-1">言語化の例</p>
+            <p class="text-sm text-indigo-800">${rec.feedback.rewriteSuggestion}</p></div>`:""}
+          <div class="grid grid-cols-3 gap-2 text-center">
+            ${[["明確さ",rec.feedback.clarity],["表現力",rec.feedback.expressiveness],["構造性",rec.feedback.structure]].map(([l,v])=>
+              `<div class="bg-gray-50 rounded-xl py-2"><p class="text-lg font-bold text-gray-800">${v}</p><p class="text-xs text-gray-400">${l}</p></div>`
+            ).join("")}
+          </div>
+        </div>
+      </div>`;
+    }).join("");
+    return `<div class="flex flex-col gap-3">
+      <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wide">${label}</h3>
+      ${items}
+    </div>`;
+  }).join("");
+
+  return `<div class="flex flex-col fade-in">
+    <div class="px-6 pt-10 pb-4">
+      <h2 class="text-2xl font-black text-gray-900">練習履歴</h2>
+      <p class="text-sm text-gray-400 mt-1">${state.sessions.length}回のセッション</p>
+    </div>
+    <div class="px-6 flex flex-col gap-6 pb-6">${html}</div>
+  </div>`;
+}
+
+// ── Actions ──────────────────────────────────────────────
+function showPage(page) {
+  if (state.timerInterval) { clearInterval(state.timerInterval); state.timerInterval=null; }
+  state.page = page;
+  if (page==="practice" && (state.phase==="writing"||state.phase==="submitting")) {
+    // keep practice state
+  } else if (page==="practice") {
+    // stay in current phase
+  }
+  render();
+  document.querySelectorAll("[id^='nav-']").forEach(el=>el.className=el.className.replace("text-indigo-600","text-gray-400"));
+  document.getElementById("nav-"+page).className=document.getElementById("nav-"+page).className.replace("text-gray-400","text-indigo-600");
+}
+
+function selectEx(id) {
+  if (state.timerInterval) { clearInterval(state.timerInterval); state.timerInterval=null; }
+  state.selectedEx = EXERCISES.find(e=>e.id===id);
+  state.userText=""; state.elapsed=0; state.feedback=null;
+  state.phase="ready";
+  render();
+}
+
+function startWriting() {
+  state.phase="writing";
+  state.elapsed=0;
+  render();
+  document.getElementById("user-text")?.focus();
+  state.timerInterval = setInterval(()=>{
+    state.elapsed++;
+    const ex = state.selectedEx;
+    const remaining = ex.timeLimit - state.elapsed;
+    const pct = (state.elapsed/ex.timeLimit)*100;
+    const urgent = remaining<=30;
+    const mm=String(Math.floor(remaining/60)).padStart(2,"0"), ss=String(remaining%60).padStart(2,"0");
+    const display=document.getElementById("timer-display");
+    const bar=document.getElementById("timer-bar");
+    if(display) { display.textContent=`${mm}:${ss}`; display.className=`text-3xl font-mono font-bold tabular-nums ${urgent?"text-red-500":"text-gray-700"}`; }
+    if(bar) { bar.style.width=pct+"%"; bar.className=`h-full rounded-full ${urgent?"bg-red-400":"bg-indigo-500"}`; }
+    if(remaining<=0) {
+      clearInterval(state.timerInterval);
+      state.timerInterval=null;
+      if(state.userText.trim().length>0) submitAnswer();
+    }
+  },1000);
+}
+
+function submitAnswer() {
+  if(state.timerInterval) { clearInterval(state.timerInterval); state.timerInterval=null; }
+  if(!state.userText.trim()) return;
+  state.phase="submitting";
+  render();
+  // Simulate API delay
+  setTimeout(()=>{
+    const fb = mockFeedback(state.userText, state.selectedEx);
+    state.feedback = fb;
+    const record = {
+      id: Date.now()+"-"+Math.random().toString(36).slice(2),
+      exerciseId: state.selectedEx.id,
+      exercise: state.selectedEx,
+      userResponse: state.userText,
+      feedback: fb,
+      completedAt: new Date().toISOString(),
+      durationSeconds: state.elapsed,
+    };
+    saveSession(record);
+    state.phase="feedback";
+    render();
+  }, 1500);
+}
+
+function backToSelect() {
+  state.phase="select"; state.selectedEx=null; state.userText=""; state.feedback=null; state.elapsed=0;
+  render();
+}
+
+function toggleRecord(id) {
+  const el=document.getElementById(id);
+  if(el) el.classList.toggle("hidden");
+}
+
+// ── Render ───────────────────────────────────────────────
+function render() {
+  const app=document.getElementById("app");
+  if(state.page==="home") app.innerHTML=renderHome();
+  else if(state.page==="practice") app.innerHTML=renderPractice();
+  else if(state.page==="history") app.innerHTML=renderHistory();
+  // Restore textarea value
+  if(state.phase==="writing") {
+    const ta=document.getElementById("user-text");
+    if(ta) { ta.value=state.userText; ta.oninput=e=>{state.userText=e.target.value;const cc=document.getElementById("char-count");if(cc)cc.textContent=e.target.value.length+"文字";}; }
+  }
+}
+
+render();
+</script>
+</body>
+</html>
